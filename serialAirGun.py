@@ -34,14 +34,14 @@ TOTAL_SAMPLES = 2000    # Максимальное число отсчетов �
 
 # ---------- Настройки для изменения пользователем ---------------
 
-CHANNEL_MASK    = 3     # Маска каналов По умолчанию
+CHANNEL_MASK    = 1     # Маска каналов По умолчанию
 SAMPLES         = 1000  # Число отсчетов после синхроимпульса По умолчанию
 SAMPLING_PERIOD = 100   # Период выборки АЦП в микросекундах По умолчанию
 INP_DELAY       = 20    # Задержка запуска после синхроимпульса в микросекундах По умолчанию
 DELAY1          = 10    # Задержка запуска после синхроимпульса в микросекундах По умолчанию
 DELAY2          = 10    # Задержка запуска после синхроимпульса в микросекундах По умолчанию
-min_time_ms     = 50    # Время начала поиска времени запуска(в мс/10). По умолчанию
-window_width    = 150   # Окно поиска времени запуска(в мс/10). По умолчанию
+min_time_ms     = 100    # Время начала поиска времени запуска(в мс/10). По умолчанию
+window_width    = 200   # Окно поиска времени запуска(в мс/10). По умолчанию
 Nround          = 5     # Количество отсчетов для округления при поиске пиков. По умолчанию
 # ================================================================================
 
@@ -307,10 +307,11 @@ def CheckSerial():
         savetxt(filename, arr, fmt="%d")
         print('Data saved as:', filename)
         inData = inData[dataSize:]
-        # print(arr)
-        global PICK1, PICK2  # Поиск момента запуска пушки
-        PICK1, PICK2 = change_delay(arr)
-
+        global PICK1, PICK2, PickList1, PickList2  # Поиск момента запуска пушки
+        print(change_delay(arr))
+        # PICK1, PICK2 = change_delay(arr)
+        # PickList1.append(PICK1)
+        # PickList2.append(PICK2)
         Redraw(arr)
 
 
@@ -399,17 +400,117 @@ def change_delay(arr):  # Поиск момента запуска пушки
         true_picks = []
         if 0 < len(picks) < 3:
             for i in picks:  # проверка пиков на то, есть в их округе значения меньше max*0.7
-                if i < (min_time_ms + window_width):
+                if min_time_ms <= i <= (min_time_ms + window_width):
                     true_picks.append(i)
             PICK = true_picks[0]
         else:
             PICK = -1
         return PICK
+    def get_ch_delay1(FB):
+        df = pd.DataFrame(columns=['signal', '1', '2', '3'])
+        df['signal'] = FB
+        filt_low = []
+        for i in range(df.shape[0]):
+            filt_low.append(0)
+        for i in range(6, df.shape[0] - 6):  # ширина фильтра  #for i in range(5, df.shape[0] - 5): # ширина фильтра
+            filt_low[i] = 1
+        sigfft_low = sp.fft.fft(df['signal'])
+        for i in range(df.shape[0]):
+            sigfft_low[i] *= filt_low[i]
+        sigres_low = sp.fft.ifft(sigfft_low).real
+        maxvalueid = sigres_low[10:-10].argmax()
+
+        filt = []  # сглаживание
+        for i in range(df.shape[0]):
+            filt.append(1)
+        for i in range(100, df.shape[0] - 100):  # ширина фильтра
+            filt[i] = 0
+        sigfft = sp.fft.fft(df['signal'])
+        for i in range(df.shape[0]):
+            sigfft[i] *= filt[i]
+        sigres = sp.fft.ifft(sigfft).real
+
+        for i in range(df.shape[0]):
+            df._set_value(i, 'signal', abs(sigres[i]))
+
+        for i in range(1, df.shape[0] - 1):
+            df._set_value(i, '3', 0)
+            df._set_value(i, '1', df.iloc[i + 1]['signal'] - df.iloc[i]['signal'])  # расчет первая производная
+            df._set_value(i, '2', df.iloc[i]['1'] - df.iloc[i - 1]['1'])  # расчет вторая производная
+
+        for i in range(40, df.shape[0] - 4):
+            # проверка по второй производной
+            if df.iloc[i - 2]['2'] < 0 \
+                    and df.iloc[i - 1]['2'] < 0 \
+                    and df.iloc[i]['2'] < 0 \
+                    and df.iloc[i + 1]['2'] < 0 \
+                    and df.iloc[i + 2]['2'] < 0:
+                for j in range(-2, 2):
+                    df._set_value(i, '3', 570)
+            # проверка по знаку первой производной
+            if df.iloc[i - 4]['1'] > 0 \
+                    and df.iloc[i - 3]['1'] > 0 \
+                    and df.iloc[i - 2]['1'] > 0 \
+                    and df.iloc[i - 1]['1'] > 0 \
+                    and df.iloc[i + 1]['1'] < 0 \
+                    and df.iloc[i + 2]['1'] < 0 \
+                    and df.iloc[i + 3]['1'] < 0 \
+                    and df.iloc[i + 4]['1'] < 0:
+                # df.iloc[i]['1'] == 0 and
+                df._set_value(i, '3', df.iloc[i]['3'] + 530)
+
+        max_2 = df['2'].max()
+        for i in range(10, df.shape[0] - 10):  # проверка по наличию максимального значения 1й производной
+            up = False
+            down = False
+            condition_5 = False
+            for j in range(-10, 0):
+                if df.iloc[i + j]['1'] > max_2 * 0.9:
+                    up = True
+            for j in range(10):
+                if df.iloc[i + j]['1'] < -max_2 * 0.9:
+                    down = True
+            if up and down:
+                df._set_value(i, '3', df.iloc[i]['3'] + 510)
+            for j in range(-10 + i, i + 10):
+                if df.iloc[j]['signal'] < df.iloc[i]['signal'] * 0.7:
+                    condition_5 = True
+            if condition_5:
+                df._set_value(i, '3', df.iloc[i]['3'] + 510)
+
+        for i in range(min_time_ms + window_width, df.shape[0]):  # избавляемся от краевых эффектов
+            df._set_value(i, '3', 0)
+        for i in range(0, min_time_ms):
+            df._set_value(i, '3', 0)
+
+        df._set_value(maxvalueid, '3', df.iloc[maxvalueid]['3'] + 500)
+
+        picks = df[df['3'] > (df['3'].max() * 0.95)].index.tolist()  # получение значений с максимальным совпадением признаков
+        print(picks)
+        true_picks = []
+        if 0 < len(picks) < 3:
+            for i in picks:  # проверка пиков на то, есть в их округе значения меньше max*0.7
+                # if min_time_ms <= i <= (min_time_ms + window_width):
+                #     true_picks.append(i)
+                true_picks.append(i)
+            PICK = true_picks[0] + min_time_ms
+        else:
+            PICK = -1
+        return PICK
 
     FB1 = arr[:, 2]
+    # [min_time_ms-10:min_time_ms + window_width+11]
     FB2 = arr[:, 5]
-    P1 = get_ch_delay(FB1)
-    P2 = get_ch_delay(FB2)
+    # [min_time_ms:min_time_ms + window_width+1]
+    P1, P2 = 0, 0
+    if CHANNEL_MASK == 3:
+        P1 = get_ch_delay(FB1)
+        P2 = get_ch_delay(FB2)
+    elif CHANNEL_MASK == 1:
+        P1 = get_ch_delay(FB1)
+    elif CHANNEL_MASK == 2:
+        P2 = get_ch_delay(FB2)
+    # P1 = get_ch_delay1(FB1)
     return P1, P2
 
 
@@ -441,18 +542,22 @@ def Apply_changes():
         else:
             CHANNEL_MASK = 0
 
-    global INP_DELAY, DELAY1, DELAY2, Nround
+    global INP_DELAY, DELAY1, DELAY2, Nround, min_time_ms, window_width
+
+    window_width = int(SW_start.get())
+    min_time_ms = int(SW_length.get())
     INP_DELAY = int(delay.get())
     Nround = int(nround.get())
-    if PickList1:
-        DELAY1 = INP_DELAY - round_picks(PickList1, PICK1)
-    else:
-        DELAY1 = 0
-        
-    if PickList2:
-        DELAY2 = INP_DELAY - round_picks(PickList2, PICK2)
-    else:
-        DELAY2 = 0
+
+    # if PickList1:
+    #     DELAY1 = INP_DELAY - round_picks(PickList1, PICK1)
+    # else:
+    #     DELAY1 = 0
+    #
+    # if PickList2:
+    #     DELAY2 = INP_DELAY - round_picks(PickList2, PICK2)
+    # else:
+    #     DELAY2 = 0
 
     SendSetup(channelMask=CHANNEL_MASK, samples=SAMPLES, samplingPeriod=SAMPLING_PERIOD, delay1=DELAY1, delay2=DELAY2)
     print('Changes Applied')
@@ -476,7 +581,7 @@ plot_widget.grid(row=0, column=0, columnspan=16)  # Add the plot to the tkinter 
 tk.Button(root, text="Start", command=lambda x=1: SendControl(x)).grid(row=1, column=0,
                                                                        sticky='nesw')  # Create a tkinter button
 tk.Button(root, text="Stop", command=lambda x=0: SendControl(x), height=2).grid(row=1, column=1,
-                                                                      sticky='nesw')  # Create a tkinter button
+                                                                                sticky='nesw')  # Create a tkinter button
 tk.Button(root, text="Fire", command=lambda x=0xFE: SendControl(x)).grid(row=1, column=2,
                                                                          sticky='nesw')  # Create a tkinter button
 tk.Button(root, text="Exit", command=Exit).grid(row=1, column=3, sticky='nesw')  # Create a tkinter button
@@ -511,14 +616,13 @@ tk.Button(root, text='Apply Changes', command=Apply_changes).grid(row=1, column=
 
 # Channels checkbuttons
 var1 = tk.BooleanVar(value=1)
-var2 = tk.BooleanVar(value=1)
+var2 = tk.BooleanVar(value=0)
 
 cb = tk.IntVar(value=1)
 tk.Label(root, text='Channel1').grid(row=2, column=0, sticky='s')
 tk.Checkbutton(root, variable=var1, onvalue=1, offvalue=0).grid(row=2, column=1, sticky='nesw')
 tk.Label(root, text='Channel2').grid(row=2, column=2, sticky='s')
 tk.Checkbutton(root, variable=var2, onvalue=1, offvalue=0).grid(row=2, column=3, sticky='nesw')
-
 
 
 # send start commands
