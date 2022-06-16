@@ -37,11 +37,11 @@ TOTAL_SAMPLES = 2000    # Максимальное число отсчетов �
 CHANNEL_MASK    = 1     # Маска каналов По умолчанию
 SAMPLES         = 1000  # Число отсчетов после синхроимпульса По умолчанию
 SAMPLING_PERIOD = 100   # Период выборки АЦП в микросекундах По умолчанию
-INP_DELAY       = 20    # Задержка запуска после синхроимпульса в микросекундах По умолчанию
-DELAY1          = 10    # Задержка запуска после синхроимпульса в микросекундах По умолчанию
-DELAY2          = 10    # Задержка запуска после синхроимпульса в микросекундах По умолчанию
-min_time_ms     = 100    # Время начала поиска времени запуска(в мс/10). По умолчанию
-window_width    = 200   # Окно поиска времени запуска(в мс/10). По умолчанию
+INP_DELAY       = 30    # Задержка запуска после синхроимпульса в миллисекундах По умолчанию
+DELAY1          = 0     # Задержка запуска после синхроимпульса в миллисекундах По умолчанию
+DELAY2          = 0     # Задержка запуска после синхроимпульса в миллисекундах По умолчанию
+min_time_ms     = 10    # Время начала поиска времени запуска в миллисекундах. По умолчанию
+window_width    = 20    # Окно поиска времени запуска в миллисекундах. По умолчанию
 Nround          = 5     # Количество отсчетов для округления при поиске пиков. По умолчанию
 # ================================================================================
 
@@ -51,8 +51,6 @@ inData = b''  # Incoming serial data
 root = tk.Tk()
 freeSpace = shutil.disk_usage('/').free  # Free space on disk
 controlState = 0   # Текущее состояние Пушки: вкл/выкл
-PICK1 = INP_DELAY  # Значение по умолчанию для установки нулевой задержки при первом выстреле
-PICK2 = INP_DELAY  # Значение по умолчанию для установки нулевой задержки при первом выстреле
 PickList1 = []
 PickList2 = []
 
@@ -307,11 +305,34 @@ def CheckSerial():
         savetxt(filename, arr, fmt="%d")
         print('Data saved as:', filename)
         inData = inData[dataSize:]
-        global PICK1, PICK2, PickList1, PickList2  # Поиск момента запуска пушки
-        print(change_delay(arr))
-        # PICK1, PICK2 = change_delay(arr)
-        # PickList1.append(PICK1)
-        # PickList2.append(PICK2)
+
+        global PickList1, PickList2, DELAY1, DELAY2, del1, del2
+        # DELAY1 += 3000
+
+        PICK1, PICK2 = change_delay(arr)
+        if PICK1 > 0:
+            p1 = (PICK1 - (INP_DELAY - PICK1)) * 100
+            PickList1 = add_picks(PickList1, p1)
+        if PICK2 > 0:
+            p2 = (PICK2 - (INP_DELAY - PICK2)) * 100
+            PickList2 = add_picks(PickList2, p2)
+
+        if PickList1:
+            DELAY1 = INP_DELAY * 100 - round(numpy.mean(PickList1))
+
+        if PickList2:
+            DELAY2 = INP_DELAY * 100 - round(numpy.mean(PickList2))
+
+        SendSetup(delay1=DELAY1, delay2=DELAY2)
+
+        # Вывод значений DELAY в окно Tk
+        del1 = tk.StringVar(value=str(DELAY1 / 1000))
+        del2 = tk.StringVar(value=str(DELAY2 / 1000))
+        tk.Entry(root, width=5, textvariable=del1, state='disabled').grid(row=2, column=12, sticky='s')
+        tk.Entry(root, width=5, textvariable=del2, state='disabled').grid(row=2, column=13, sticky='s')
+
+
+        # Визуализация сигнала
         Redraw(arr)
 
 
@@ -503,23 +524,18 @@ def change_delay(arr):  # Поиск момента запуска пушки
     FB2 = arr[:, 5]
     # [min_time_ms:min_time_ms + window_width+1]
     P1, P2 = 0, 0
-    if CHANNEL_MASK == 3:
+    if CHANNEL_MASK in (1, 3):
         P1 = get_ch_delay(FB1)
+    if CHANNEL_MASK in (2, 3):
         P2 = get_ch_delay(FB2)
-    elif CHANNEL_MASK == 1:
-        P1 = get_ch_delay(FB1)
-    elif CHANNEL_MASK == 2:
-        P2 = get_ch_delay(FB2)
-    # P1 = get_ch_delay1(FB1)
     return P1, P2
 
 
-def round_picks(pick_list, pick):
-    if pick > 0:
-        pick_list.append(pick)
-        if len(pick_list) > Nround:
-            pick_list = pick_list[-Nround:]
-    return round(numpy.mean(pick_list))
+def add_picks(pick_list, pick):
+    pick_list.append(pick)
+    if len(pick_list) > Nround:
+        pick_list = pick_list[-Nround:]
+    return pick_list
 
 
 def Reconnect():
@@ -542,22 +558,11 @@ def Apply_changes():
         else:
             CHANNEL_MASK = 0
 
-    global INP_DELAY, DELAY1, DELAY2, Nround, min_time_ms, window_width
-
-    window_width = int(SW_start.get())
-    min_time_ms = int(SW_length.get())
-    INP_DELAY = int(delay.get())
+    global INP_DELAY, Nround, min_time_ms, window_width
+    INP_DELAY = int(delay.get()) * 10
     Nround = int(nround.get())
-
-    # if PickList1:
-    #     DELAY1 = INP_DELAY - round_picks(PickList1, PICK1)
-    # else:
-    #     DELAY1 = 0
-    #
-    # if PickList2:
-    #     DELAY2 = INP_DELAY - round_picks(PickList2, PICK2)
-    # else:
-    #     DELAY2 = 0
+    min_time_ms = int(SW_start.get()) * 10
+    window_width = int(SW_length.get()) * 10
 
     SendSetup(channelMask=CHANNEL_MASK, samples=SAMPLES, samplingPeriod=SAMPLING_PERIOD, delay1=DELAY1, delay2=DELAY2)
     print('Changes Applied')
@@ -580,8 +585,8 @@ plot_widget.grid(row=0, column=0, columnspan=16)  # Add the plot to the tkinter 
 # col = iter(num_list)
 tk.Button(root, text="Start", command=lambda x=1: SendControl(x)).grid(row=1, column=0,
                                                                        sticky='nesw')  # Create a tkinter button
-tk.Button(root, text="Stop", command=lambda x=0: SendControl(x), height=2).grid(row=1, column=1,
-                                                                                sticky='nesw')  # Create a tkinter button
+tk.Button(root, text="Stop", command=lambda x=0: SendControl(x)).grid(row=1, column=1,
+                                                                      sticky='nesw')  # Create a tkinter button
 tk.Button(root, text="Fire", command=lambda x=0xFE: SendControl(x)).grid(row=1, column=2,
                                                                          sticky='nesw')  # Create a tkinter button
 tk.Button(root, text="Exit", command=Exit).grid(row=1, column=3, sticky='nesw')  # Create a tkinter button
@@ -591,11 +596,11 @@ delay = tk.StringVar(value=str(INP_DELAY))
 del1 = tk.StringVar(value=str(DELAY1))
 del2 = tk.StringVar(value=str(DELAY2))
 
-tk.Label(root, text='Delay').grid(row=1, column=5, sticky='s')
+tk.Label(root, text='Delay, ms').grid(row=1, column=5, sticky='s')
 tk.Spinbox(root, width=5, textvariable=delay, from_=0, to=1000).grid(row=2, column=5, sticky='s')
-tk.Label(root, text='Delay 1ch').grid(row=1, column=12, sticky='s')
+tk.Label(root, text='Delay 1ch, ms').grid(row=1, column=12, sticky='s')
 tk.Entry(root, width=5, textvariable=del1, state='disabled').grid(row=2, column=12, sticky='s')
-tk.Label(root, text='Delay 2ch').grid(row=1, column=13, sticky='s')
+tk.Label(root, text='Delay 2ch, ms').grid(row=1, column=13, sticky='s')
 tk.Entry(root, width=5, textvariable=del2, state='disabled').grid(row=2, column=13, sticky='s')
 
 # Search pick input
@@ -604,25 +609,25 @@ SW_length = tk.StringVar(value=str(window_width))
 nround = tk.StringVar(value=str(Nround))
 
 
-tk.Label(root, text='Search window,\n start').grid(row=1, column=6, sticky='s')
+tk.Label(root, text='Search window,\n start, ms').grid(row=1, column=6, sticky='s')
 tk.Spinbox(root, width=5, textvariable=SW_start, from_=0, to=1000).grid(row=2, column=6, sticky='s')
-tk.Label(root, text='Search window,\n width').grid(row=1, column=7, sticky='s')
+tk.Label(root, text='Search window,\n width, ms').grid(row=1, column=7, sticky='s')
 tk.Spinbox(root, width=5, textvariable=SW_length, from_=0, to=1000).grid(row=2, column=7, sticky='s')
 
-tk.Label(root, text='Round search pick').grid(row=1, column=8, sticky='s')
+tk.Label(root, text='Round search pick, pcs').grid(row=1, column=8, sticky='s')
 tk.Spinbox(root, width=5, textvariable=nround, from_=0, to=1000).grid(row=2, column=8, sticky='s')
 
 tk.Button(root, text='Apply Changes', command=Apply_changes).grid(row=1, column=15, sticky='nesw')
 
 # Channels checkbuttons
-var1 = tk.BooleanVar(value=1)
-var2 = tk.BooleanVar(value=0)
+var1 = tk.IntVar(value=1)
+var2 = tk.IntVar(value=0)
 
 cb = tk.IntVar(value=1)
-tk.Label(root, text='Channel1').grid(row=2, column=0, sticky='s')
-tk.Checkbutton(root, variable=var1, onvalue=1, offvalue=0).grid(row=2, column=1, sticky='nesw')
-tk.Label(root, text='Channel2').grid(row=2, column=2, sticky='s')
-tk.Checkbutton(root, variable=var2, onvalue=1, offvalue=0).grid(row=2, column=3, sticky='nesw')
+# tk.Label(root, text='Channel1').grid(row=2, column=0, sticky='s')
+tk.Checkbutton(root, variable=var1, text='Channel1').grid(row=2, column=0, sticky='nesw')
+# tk.Label(root, text='Channel2').grid(row=2, column=2, sticky='s')
+tk.Checkbutton(root, variable=var2, text='Channel2').grid(row=2, column=2, sticky='nesw')
 
 
 # send start commands
