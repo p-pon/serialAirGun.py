@@ -48,11 +48,11 @@ Nround          = 5     # Количество отсчетов для окру�
 # Variables
 maxN = 0  # Number of next dump file
 inData = b''  # Incoming serial data
-root = tk.Tk()
+root = tk.Tk()  # Tkinter window
 freeSpace = shutil.disk_usage('/').free  # Free space on disk
 controlState = 0   # Текущее состояние Пушки: вкл/выкл
-PickList1 = []
-PickList2 = []
+PickList1 = []  # Список моментов запуска пушки для округления
+PickList2 = []  # Список моментов запуска пушки для округления
 
 
 # расчет CRC32 короткой строки, длина строки должна быть кратной 4
@@ -88,6 +88,12 @@ def SaveCommand(data):  # запись данных в SaveCommand.txt
     f.close()
 
 
+def SaveLog(data):
+    Log = open("LOGFile.txt", "a")  # append
+    Log.write(data)
+    Log.close()
+
+
 # Отправка Заголовка и данных на микроконтроллер (данные - параметр, заголовок создается)
 def Send(data):
     header = struct.pack("=4s2L", b'COMM', len(data), CalcCRC32(data))
@@ -116,6 +122,8 @@ def SendSetup(channelMask=CHANNEL_MASK, samples=SAMPLES, samplingPeriod=SAMPLING
     # TODO вот тут менять delay
     data = struct.pack("=HHHHLL", 1, channelMask, samples, samplingPeriod, delay1, delay2)
     SaveCommand(b"[[SendSetup]]")
+    SaveLog(str(list(map(str, (channelMask, samples, samplingPeriod, delay1, delay2, '\n')))))
+    #TODO добавить Log file системное время, del1, del2, pick1, pick2
     Send(data)
 
 
@@ -305,25 +313,33 @@ def CheckSerial():
         savetxt(filename, arr, fmt="%d")
         print('Data saved as:', filename)
         inData = inData[dataSize:]
-
+        Redraw(arr)
         global PickList1, PickList2, DELAY1, DELAY2, del1, del2
         # DELAY1 += 3000
 
         PICK1, PICK2 = change_delay(arr)
         if PICK1 > 0:
-            p1 = (PICK1 - (INP_DELAY - PICK1)) * 100
-            PickList1 = add_picks(PickList1, p1)
+            gun_1_delay = DELAY1 - PICK1 * 100
+            print('gun_del= ', gun_1_delay)
+            PickList1 = add_picks(PickList1, gun_1_delay)
         if PICK2 > 0:
-            p2 = (PICK2 - (INP_DELAY - PICK2)) * 100
-            PickList2 = add_picks(PickList2, p2)
+            gun_2_delay = DELAY2 - PICK2 * 100
+            PickList2 = add_picks(PickList2, gun_2_delay)
 
         if PickList1:
-            DELAY1 = INP_DELAY * 100 - round(numpy.mean(PickList1))
-
+            DELAY1 = INP_DELAY * 1000 + round(numpy.mean(PickList1))
         if PickList2:
-            DELAY2 = INP_DELAY * 100 - round(numpy.mean(PickList2))
-
-        SendSetup(delay1=DELAY1, delay2=DELAY2)
+            DELAY2 = INP_DELAY * 1000 + round(numpy.mean(PickList2))
+        if DELAY1 < 0:
+            DELAY1 = 0
+        if DELAY1 > INP_DELAY * 1000:
+            DELAY1 = INP_DELAY * 1000
+        if DELAY2 < 0:
+            DELAY2 = 0
+        if DELAY2 > INP_DELAY * 1000:
+            DELAY2 = INP_DELAY * 1000
+        print('DELAY= ', DELAY1)
+        SendSetup(delay1=int(DELAY1), delay2=int(DELAY2))
 
         # Вывод значений DELAY в окно Tk
         del1 = tk.StringVar(value=str(DELAY1 / 1000))
@@ -333,7 +349,7 @@ def CheckSerial():
 
 
         # Визуализация сигнала
-        Redraw(arr)
+
 
 
 def change_delay(arr):  # Поиск момента запуска пушки
@@ -349,7 +365,7 @@ def change_delay(arr):  # Поиск момента запуска пушки
         for i in range(df.shape[0]):
             sigfft_low[i] *= filt_low[i]
         sigres_low = sp.fft.ifft(sigfft_low).real
-        maxvalueid = sigres_low[min_time_ms:min_time_ms + window_width].argmax()
+        maxvalueid = sigres_low[min_time_ms10:min_time_ms10 + window_width10].argmax()
 
         filt = []  # сглаживание
         for i in range(df.shape[0]):
@@ -411,7 +427,7 @@ def change_delay(arr):  # Поиск момента запуска пушки
 
         for i in range(950, df.shape[0]):  # избавляемся от краевых эффектов
             df._set_value(i, '3', 0)
-        for i in range(0, min_time_ms):
+        for i in range(0, min_time_ms10):
             df._set_value(i, '3', 0)
 
         df._set_value(maxvalueid, '3', df.iloc[maxvalueid]['3'] + 500)
@@ -421,9 +437,12 @@ def change_delay(arr):  # Поиск момента запуска пушки
         true_picks = []
         if 0 < len(picks) < 3:
             for i in picks:  # проверка пиков на то, есть в их округе значения меньше max*0.7
-                if min_time_ms <= i <= (min_time_ms + window_width):
+                if min_time_ms10 <= i <= (min_time_ms10 + window_width10):
                     true_picks.append(i)
-            PICK = true_picks[0]
+            if true_picks:
+                PICK = true_picks[0]
+            else:
+                PICK = -1
         else:
             PICK = -1
         return PICK
@@ -518,6 +537,12 @@ def change_delay(arr):  # Поиск момента запуска пушки
         else:
             PICK = -1
         return PICK
+    def get_ch_delay2(FB):
+        df = list(FB)
+        return df.index(max(df[min_time_ms10:min_time_ms10+window_width10]), min_time_ms10, min_time_ms10+window_width10)
+
+    min_time_ms10 = int(min_time_ms * 10)  # Пересчет из мс в мс/10 для работы программы
+    window_width10 = int(window_width * 10)  # Пересчет из мс в мс/10 для работы программы
 
     FB1 = arr[:, 2]
     # [min_time_ms-10:min_time_ms + window_width+11]
@@ -525,7 +550,8 @@ def change_delay(arr):  # Поиск момента запуска пушки
     # [min_time_ms:min_time_ms + window_width+1]
     P1, P2 = 0, 0
     if CHANNEL_MASK in (1, 3):
-        P1 = get_ch_delay(FB1)
+        P1 = get_ch_delay2(FB1)
+        print('getchdel= ',P1)
     if CHANNEL_MASK in (2, 3):
         P2 = get_ch_delay(FB2)
     return P1, P2
@@ -559,10 +585,10 @@ def Apply_changes():
             CHANNEL_MASK = 0
 
     global INP_DELAY, Nround, min_time_ms, window_width
-    INP_DELAY = int(delay.get()) * 10
+    INP_DELAY = float(delay.get())
     Nround = int(nround.get())
-    min_time_ms = int(SW_start.get()) * 10
-    window_width = int(SW_length.get()) * 10
+    min_time_ms = float(SW_start.get())
+    window_width = float(SW_length.get())
 
     SendSetup(channelMask=CHANNEL_MASK, samples=SAMPLES, samplingPeriod=SAMPLING_PERIOD, delay1=DELAY1, delay2=DELAY2)
     print('Changes Applied')
