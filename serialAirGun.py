@@ -3,6 +3,7 @@
 import os
 import sys
 import time
+from datetime import datetime
 from array import array
 
 import serial
@@ -89,9 +90,15 @@ def SaveCommand(data):  # запись данных в SaveCommand.txt
 
 
 def SaveLog(data):
-    Log = open("LOGFile.txt", "a")  # append
-    Log.write(data)
-    Log.close()
+    try:
+        file = open('LOGFile.txt')
+    except IOError as e:
+        Log = open("LOGFile.txt", "a")
+        Log.write('date hour minute second chMsk samples sampling period delay1 delay2 pick1 pick2\n')
+        Log.write(data)
+    else:
+        Log = open("LOGFile.txt", "a")
+        Log.write(data)
 
 
 # Отправка Заголовка и данных на микроконтроллер (данные - параметр, заголовок создается)
@@ -122,8 +129,9 @@ def SendSetup(channelMask=CHANNEL_MASK, samples=SAMPLES, samplingPeriod=SAMPLING
     # TODO вот тут менять delay
     data = struct.pack("=HHHHLL", 1, channelMask, samples, samplingPeriod, delay1, delay2)
     SaveCommand(b"[[SendSetup]]")
-    SaveLog(str(list(map(str, (channelMask, samples, samplingPeriod, delay1, delay2, '\n')))))
-    #TODO добавить Log file системное время, del1, del2, pick1, pick2
+    now = datetime.now()
+    SaveLog(f'{now.strftime("%j %H %M %S")} {channelMask} {samples} {samplingPeriod} {delay1} {delay2} '
+            f'{PickList1[-1]} {PickList2[-1]}\n')
     Send(data)
 
 
@@ -355,7 +363,10 @@ def CheckSerial():
 def change_delay(arr):  # Поиск момента запуска пушки
     def get_ch_delay(FB):
         df = pd.DataFrame(columns=['signal', '1', '2', '3'])
-        df['signal'] = FB
+        if (min_time_ms < 1):
+            df['signal'] = FB[min_time_ms * 10: min_time_ms * 10 + window_width * 10 + 100]
+        else:
+            df['signal'] = FB[min_time_ms * 10- 10: min_time_ms * 10 + window_width * 10 + 100]
         filt_low = []
         for i in range(df.shape[0]):
             filt_low.append(0)
@@ -370,7 +381,7 @@ def change_delay(arr):  # Поиск момента запуска пушки
         filt = []  # сглаживание
         for i in range(df.shape[0]):
             filt.append(1)
-        for i in range(100, df.shape[0] - 100):  # ширина фильтра
+        for i in range(10, df.shape[0] - 10):  # ширина фильтра
             filt[i] = 0
         sigfft = sp.fft.fft(df['signal'])
         for i in range(df.shape[0]):
@@ -425,7 +436,7 @@ def change_delay(arr):  # Поиск момента запуска пушки
             if condition_5:
                 df._set_value(i, '3', df.iloc[i]['3'] + 510)
 
-        for i in range(950, df.shape[0]):  # избавляемся от краевых эффектов
+        for i in range(df.shape[0]-50, df.shape[0]):  # избавляемся от краевых эффектов
             df._set_value(i, '3', 0)
         for i in range(0, min_time_ms10):
             df._set_value(i, '3', 0)
@@ -433,7 +444,6 @@ def change_delay(arr):  # Поиск момента запуска пушки
         df._set_value(maxvalueid, '3', df.iloc[maxvalueid]['3'] + 500)
 
         picks = df[df['3'] > (df['3'].max() * 0.95)].index.tolist()  # получение значений с максимальным совпадением признаков
-        # print(picks)
         true_picks = []
         if 0 < len(picks) < 3:
             for i in picks:  # проверка пиков на то, есть в их округе значения меньше max*0.7
@@ -545,12 +555,10 @@ def change_delay(arr):  # Поиск момента запуска пушки
     window_width10 = int(window_width * 10)  # Пересчет из мс в мс/10 для работы программы
 
     FB1 = arr[:, 2]
-    # [min_time_ms-10:min_time_ms + window_width+11]
     FB2 = arr[:, 5]
-    # [min_time_ms:min_time_ms + window_width+1]
     P1, P2 = 0, 0
     if CHANNEL_MASK in (1, 3):
-        P1 = get_ch_delay2(FB1)
+        P1 = get_ch_delay(FB1)
         print('getchdel= ',P1)
     if CHANNEL_MASK in (2, 3):
         P2 = get_ch_delay(FB2)
