@@ -24,6 +24,7 @@ import pandas as pd
 
 import scipy as sp
 import scipy.fft
+# import array
 
 # =========================== НАСТРОЙКИ ==========================================
 
@@ -94,7 +95,7 @@ def SaveLog(data):
         file = open('LOGFile.txt')
     except IOError as e:
         Log = open("LOGFile.txt", "a")
-        Log.write('date hour minute second chMsk samples sampling period delay1 delay2 pick1 pick2\n')
+        Log.write('date hour minute second chMsk samples samplingPeriod delay1 delay2 pick1 pick2\n')
         Log.write(data)
     else:
         Log = open("LOGFile.txt", "a")
@@ -129,9 +130,9 @@ def SendSetup(channelMask=CHANNEL_MASK, samples=SAMPLES, samplingPeriod=SAMPLING
     # TODO вот тут менять delay
     data = struct.pack("=HHHHLL", 1, channelMask, samples, samplingPeriod, delay1, delay2)
     SaveCommand(b"[[SendSetup]]")
-    now = datetime.now()
-    SaveLog(f'{now.strftime("%j %H %M %S")} {channelMask} {samples} {samplingPeriod} {delay1} {delay2} '
-            f'{PickList1[-1]} {PickList2[-1]}\n')
+    # now = datetime.now()
+    # SaveLog(f'{now.strftime("%j %H %M %S")} {channelMask} {samples} {samplingPeriod} {delay1} {delay2} '
+    #         f'{PickList1[-1]} {PickList2[-1]}\n')
     Send(data)
 
 
@@ -363,10 +364,10 @@ def CheckSerial():
 def change_delay(arr):  # Поиск момента запуска пушки
     def get_ch_delay(FB):
         df = pd.DataFrame(columns=['signal', '1', '2', '3'])
-        if (min_time_ms < 1):
+        if min_time_ms < 1:
             df['signal'] = FB[min_time_ms * 10: min_time_ms * 10 + window_width * 10 + 100]
         else:
-            df['signal'] = FB[min_time_ms * 10- 10: min_time_ms * 10 + window_width * 10 + 100]
+            df['signal'] = FB[min_time_ms * 10 - 10: min_time_ms * 10 + window_width * 10 + 100]
         filt_low = []
         for i in range(df.shape[0]):
             filt_low.append(0)
@@ -551,17 +552,124 @@ def change_delay(arr):  # Поиск момента запуска пушки
         df = list(FB)
         return df.index(max(df[min_time_ms10:min_time_ms10+window_width10]), min_time_ms10, min_time_ms10+window_width10)
 
+    def find_pick(FB):
+        b = np.zeros(len(FB))
+        c = np.zeros(len(FB))
+        d = np.zeros(len(FB))
+        FB = np.column_stack((FB, b, c, d))
+        filt_low = []
+
+        for i in range(len(FB)):
+            filt_low.append(0)
+        for i in range(5, len(FB) - 5):  # ширина фильтра
+            filt_low[i] = 1
+        sigfft_low = sp.fft.fft(FB[:, 0])
+        for i in range(len(FB)):
+            sigfft_low[i] *= filt_low[i]
+        sigres_low = sp.fft.ifft(sigfft_low).real
+        maxvalueid = sigres_low[min_time_ms10:min_time_ms10 + window_width10].argmax()
+
+        # кароч, про подбор окна для фильтрации частот. в фаст_фурье_трансформ длину трасы можно принимать за 1 секунду.
+        # соответственно помеха, повторяющаяся 5 раз на всем сигнале будет фильтроваться частотой в 5 Гц(эту цифру надо
+        # вписывать в строку выше (там где "ин рендж")
+
+        filt = []  # сглаживание
+        for i in range(len(FB)):
+            filt.append(1)
+        for i in range(100, len(FB) - 100):  # ширина фильтра
+            filt[i] = 0
+        sigfft = sp.fft.fft(FB[:, 0])
+        for i in range(len(FB)):
+            sigfft[i] *= filt[i]
+        sigres = sp.fft.ifft(sigfft).real
+
+        for i in range(len(FB)):
+            FB[i, 0] = abs(sigres[i])
+        FB = FB[0: min_time_ms10 + window_width10 + 10, :]
+        for i in range(1, len(FB) - 1):
+            FB[i, 3] = 0
+            FB[i, 1] = FB[i + 1, 0] - FB[i, 0]  # расчет первая производная
+            FB[i, 2] = FB[i, 1] - FB[i - 1, 1]  # расчет вторая производная
+
+        FB[0, 3] = 0
+        FB[-1, 3] = 0
+
+        for i in range(40, len(FB) - 4):
+            if FB[i - 2, 2] < 0 \
+                    and FB[i - 1, 2] < 0 \
+                    and FB[i, 2] < 0 \
+                    and FB[i + 1, 2] < 0 \
+                    and FB[i + 2, 2] < 0:  # проверка по второй производной
+                for j in range(-2, 2):
+                    FB[i, 3] = 570
+            # проверка по знаку первой производной
+            if FB[i - 4, 1] > 0 \
+                    and FB[i - 3, 1] > 0 \
+                    and FB[i - 2, 1] > 0 \
+                    and FB[i - 1, 1] > 0 \
+                    and FB[i + 1, 1] < 0 \
+                    and FB[i + 2, 1] < 0 \
+                    and FB[i + 3, 1] < 0 \
+                    and FB[i + 4, 1] < 0:
+                FB[i, 3] = FB[i, 3] + 530
+
+        max_2 = FB[:, 1].max()
+        for i in range(10, len(FB)-10):  # проверка по наличию максимального значения 1й производной
+            up = False
+            down = False
+            condition_5 = False
+            for j in range(-10, 0):
+                if FB[i + j, 1] > max_2 * 0.9:
+                    up = True
+            for j in range(10):
+                if FB[i + j, 1] < -max_2 * 0.9:
+                    down = True
+            if up and down:
+                FB[i, 3] += 510
+            for j in range(-10 + i, i):
+                if FB[j, 0] > (FB[i, 0] * 0.7):
+                    condition_5 = True
+            if not condition_5:
+                FB[i, 3] += 1000
+
+        for i in range(len(FB) - 10, len(FB)):  # избавляемся от краевых эффектов
+            FB[i, 3] = 0
+        for i in range(0, min_time_ms10):
+            FB[i, 3] = 0
+
+        FB[maxvalueid, 3] += 500
+        max3 = FB[:, 3].max() * 0.95
+        picks = []
+        for i in range(5, len(FB)):
+            if FB[i, 3] > max3:
+                picks.append(i)
+        # получение значений с максимальным совпадением признаков
+        true_picks = []
+        if 0 < len(picks) < 3:
+            for i in picks:
+                true_picks.append(i)
+
+        if len(true_picks) > 0:
+            PICK = true_picks[0]
+
+            return PICK
+        else:
+            return -1
+
     min_time_ms10 = int(min_time_ms * 10)  # Пересчет из мс в мс/10 для работы программы
     window_width10 = int(window_width * 10)  # Пересчет из мс в мс/10 для работы программы
-
+    # print(min_time_ms, window_width)
+    tik = time.perf_counter()
     FB1 = arr[:, 2]
     FB2 = arr[:, 5]
     P1, P2 = 0, 0
     if CHANNEL_MASK in (1, 3):
-        P1 = get_ch_delay(FB1)
-        print('getchdel= ',P1)
+        P1 = find_pick(FB1)
     if CHANNEL_MASK in (2, 3):
-        P2 = get_ch_delay(FB2)
+        P2 = find_pick(FB2)
+    tak = time.perf_counter()
+    print(f"Вычисление заняло {tak - tik} секунд")
+    print('pick', P1)
     return P1, P2
 
 
@@ -600,6 +708,7 @@ def Apply_changes():
 
     SendSetup(channelMask=CHANNEL_MASK, samples=SAMPLES, samplingPeriod=SAMPLING_PERIOD, delay1=DELAY1, delay2=DELAY2)
     print('Changes Applied')
+    # print(min_time_ms, window_width)
 
 
 # Open port
